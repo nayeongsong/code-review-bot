@@ -1,0 +1,33 @@
+version: '3'
+
+dotenv: ['.env']
+
+tasks:
+  run:
+    cmds:
+      - go run main.go
+  dev_server:
+    cmds:
+      - >
+        go run github.com/air-verse/air@v1.61.1 \
+        --build.cmd "go build -o tmp/bin/main" --build.bin "tmp/bin/main" --build.delay "100" \
+        --build.exclude_dir "node_modules" \
+        --build.include_ext "go" \
+        --misc.clean_on_exit true
+    requires:
+      vars: [GITHUB_TOKEN, OPENAI_API_KEY]
+  test:
+    cmds:
+      - go test -v ./...
+
+  i18n-extract:
+    cmds:
+      - goi18n extract -outdir internal/localization -sourceLanguage en -format toml
+
+  i18n-merge:
+    cmds:
+      - goi18n merge -outdir internal/localization internal/localization/active.*.toml
+
+  i18n-merge-finish:
+    cmds:
+      - goi18n merge -outdir internal/localization internal/localization/active.*.toml internal/localization/translate.*.toml
