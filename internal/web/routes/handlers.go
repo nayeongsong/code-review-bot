@@ -139,48 +139,6 @@ func (controller *GithubController) GenerateCodeReview(e echo.Context) error {
 	return e.JSON(http.StatusOK, patches)
 }
 
-func (controller *GithubController) processPullRequest(
-	e echo.Context,
-	repoName string,
-	prNumber int,
-	owner string,
-	prFiles []domain.FileContentResponse,
-) {
-	cc := e.(*web.AppContext)
-
-	for _, file := range prFiles {
-		changeBatches, err := ParsePatch(file.Content)
-		if err != nil {
-			cc.AppLogger.Error("Failed to parse patch", zap.Error(err))
-			continue
-		}
-
-		for _, batch := range changeBatches {
-			reviewSuggestionResponse, err := controller.requestCodeReview(e, batch.StartLine, batch.EndLine, batch.Content)
-			if err != nil {
-				cc.AppLogger.Error("Failed to request code review", zap.Error(err))
-				continue
-			}
-
-			for _, suggestion := range reviewSuggestionResponse.ReviewSuggestions {
-				// Post each suggestion as a comment to the PR
-				err := controller.postCommentToPR(
-					e,
-					repoName,
-					prNumber,
-					owner,
-					file.Filename,
-					suggestion.Position, // Use the exact line suggested by the model
-					suggestion.Comment,
-				)
-				if err != nil {
-					cc.AppLogger.Error("Failed to post comment to GitHub", zap.Error(err))
-				}
-			}
-		}
-	}
-}
-
 func (controller *GithubController) listAllContentsInPullRequest(e echo.Context, repoName string, prNumber int, owner string) ([]domain.FileContentResponse, error) {
 	cc := e.(*web.AppContext)
 
@@ -232,6 +190,8 @@ type ChangeBatch struct {
 func ParsePatch(patch string) ([]ChangeBatch, error) {
 	var changeBatches []ChangeBatch
 
+	// unified-diff format: @@ -start,count +start,count @@
+	// original state represented with -, and the new state is represented with + (does not mean additions and deletions)
 	hunkHeaderRegex := regexp.MustCompile(`@@ -\d+(,\d+)? \+(\d+)(,\d+)? @@`)
 	lines := strings.Split(patch, "\n")
 	var currentPosition int
@@ -243,6 +203,9 @@ func ParsePatch(patch string) ([]ChangeBatch, error) {
 			// Parse starting line number
 			startingLine := matches[2]
 			currentLine, _ = strconv.Atoi(startingLine)
+
+			// Reset position for the new hunk
+			currentPosition = 0
 
 			// Finalize ongoing batch
 			if currentBatch != nil {
@@ -263,7 +226,8 @@ func ParsePatch(patch string) ([]ChangeBatch, error) {
 			}
 			currentBatch.EndLine = currentLine
 			currentLine++
-		} else if !strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+
+		} else if strings.HasPrefix(line, " ") {
 			// Increment line for context lines
 			currentLine++
 		} else if currentBatch != nil {
