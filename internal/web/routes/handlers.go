@@ -101,6 +101,23 @@ func (controller *GithubController) GenerateCodeReview(e echo.Context) error {
 		return err
 	}
 
+	existingComments, _, err := controller.GithubClient.PullRequests.ListComments(
+		controller.Context,
+		owner,
+		repoName,
+		prNumber,
+		nil,
+	)
+
+	if err != nil {
+		cc.AppLogger.Error("Failed to list pull request comments", zap.Error(err))
+		return err
+	}
+
+	for _, existingComment := range existingComments {
+		controller.GithubClient.PullRequests.DeleteComment(controller.Context, owner, repoName, existingComment.GetID())
+	}
+
 	for _, patch := range patches {
 		reviewSuggestionResponse, err := controller.requestCodeReview(e, patch.StartLine, patch.EndLine, patch.Content)
 		if err != nil {
@@ -281,14 +298,18 @@ func (controller *GithubController) requestCodeReview(
 
 	chatCompletion, err := controller.OpenAIClient.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(
-				"You are a thoughtful and concise code reviewer. Your goal is to identify and provide actionable suggestions for only the most critical and impactful areas of improvement in the code. Focus on the following priorities: " +
-					"1. Logical errors, potential bugs, or unintended behavior. " +
-					"2. Performance or scalability issues. " +
-					"3. Security vulnerabilities or risks. " +
-					"4. Code readability and maintainability where significant improvements can be made. " +
-					"Avoid nitpicking minor stylistic issues or insignificant details unless they substantially impact the code. Provide clear and concise explanations for each suggestion, including specific line numbers where applicable.",
-			),
+			openai.SystemMessage(`You are developing an automated code review tool for the Engineering department of a technology/software company. Given a code snippet or file, analyze the code's quality and provide suggestions for improvement. Identify common issues such as code smells, anti-patterns, potential bugs, performance bottlenecks, and security vulnerabilities. Offer actionable recommendations to address these issues and improve the overall quality of the code.
+
+
+			**Avoid commenting on**:
+			- Code formatting, style, or linting issues (e.g., missing semicolons, indentation, naming conventions).
+			- Documentation or code comments, unless they are completely incorrect or misleading.
+			- Any automatically generated code, including files like package.json, go.mod, or auto-generated code/comments.
+			- Trivial or subjective issues (e.g., preferences for variable names, small logical redundancies).
+						
+			**Important**:
+			- Only provide feedback when there is a clear, significant issue or improvement to suggest.
+			- Do not return anything if there are no critical comments."`),
 			openai.UserMessage(fmt.Sprintf(
 				"Here is the code to review (lines %d to %d):\n\n%s",
 				startLine, endLine, content,
